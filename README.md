@@ -1,7 +1,8 @@
 # EXPERIMENT-04-INTERRUPT-GENERATION-USING-SENSOR-AND-VISUALIZING-USING-SERIAL-MONITOR
 
-###  DATE: 20/09/2025
-###  NAME: Thirunavukkarasu meenakshisundaram
+###  DATE: 21/9/2025
+
+###  NAME: thirunavukkarasu meenakshisundaram
 ###  ROLL NO : 212224220117
 ###  DEPARTMENT: IT
 ### Aim:
@@ -124,18 +125,34 @@ The diagram below shows how the GPIO pins are connected to the 16 interrupt line
  
 
 ## STM 32 CUBE PROGRAM :
-
-```
+```C
 #include "main.h"
+
+#include "stm32wlxx_hal.h"   // 🔹 CORRECTED: Required HAL header for the STM32WLxx series (Matching -DSTM32WLE5xx build flag)
 #include "stdio.h"
-#if defined (__ICCARM) || defined (__ARMCC_VERSION)
+#include "stdbool.h"
+
+// --- Global Variables for Interrupt Communication ---
+UART_HandleTypeDef huart2;
+
+// Volatile flag to signal the main loop that an interrupt occurred
+volatile bool g_state_changed = false;
+// Volatile variable to store the actual pin state read in the interrupt
+volatile GPIO_PinState g_current_pin_state;
+
+// Forward declaration needed for the compiler
+void Error_Handler(void);
+
+// --- PUTCHAR PROTOTYPE MACROS for printf redirection (Prototypes only) ---
+#if defined(ICCARM) || defined(__ARMCC_VERSION)
 #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
-#elif defined(__GNUC__)
+#elif defined(GNUC)
+// NOTE: We rely on the explicit function definition below for the body,
+// but keep this macro definition in case it is used elsewhere.
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #endif
 
-UART_HandleTypeDef huart2;
-
+// --- Function Prototypes ---
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
@@ -143,39 +160,184 @@ static void MX_USART2_UART_Init(void);
 int main(void)
 {
     HAL_Init();
-
     SystemClock_Config();
-
     MX_GPIO_Init();
     MX_USART2_UART_Init();
-    while (1)
-  {
 
-  }
-  }
+    printf("System Initialized (Interrupt-Driven IR Sensor)\n");
+
+    // Main loop runs continuously
+    while (1)
+    {
+        // Check the volatile flag set by the interrupt
+        if (g_state_changed)
+        {
+            g_state_changed = false; // Acknowledge and clear the flag immediately
+
+            // Process the event (slow I/O and non-critical operations here)
+            if (g_current_pin_state == GPIO_PIN_RESET)
+            {
+                // IR Sensor is typically active LOW (RESET) when an obstacle is present
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
+                printf("Obstacle Detected (PB4 LOW) - LED ON\n");
+            }
+            else
+            {
+                // IR Sensor is typically active HIGH (SET) when no obstacle is present
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+                printf("Obstacle Cleared (PB4 HIGH) - LED OFF\n");
+            }
+
+            // Add a small delay for debouncing after an event is registered,
+            // preventing the main loop from spamming the UART on noisy edges.
+            HAL_Delay(50);
+        }
+    }
+}
+
+/**
+  * @brief EXTI line detection callback (Called by the HAL driver after interrupt).
+  * @param GPIO_Pin: Specifies the pins connected EXTI line
+  */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_4)==1)
-	{
-		printf("INTERRUPT GENERATED\n");
-	}
+    // Ensure the interrupt is from the intended pin (PB4)
+    if (GPIO_Pin == GPIO_PIN_4)
+    {
+        // Read the current state of the pin that triggered the interrupt
+        g_current_pin_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4);
+        g_state_changed = true; // Signal the main loop to process the event
+    }
 }
-PUTCHAR_PROTOTYPE{
-	HAL_UART_Transmit(&huart2, (uint8_t*)&ch,1,0xFFFF);
-	return ch;
+
+// IRQ HANDLER FIXED: Using the specific handler name EXTI4_IRQHandler,
+// which is required for linking in many CubeMX/HAL projects.
+void EXTI4_IRQHandler(void)
+{
+    // Clears the interrupt flag for PB4
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_4);
 }
+
+// --- printf Redirection Implementation (GCC) ---
+int __io_putchar(int ch) // 🔹 FIX: Explicitly define the GCC function signature to resolve syntax error
+{
+    // Transmits single character over UART2 with max delay (blocking)
+    HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    return ch;
+}
+
+// --- System Clock Configuration ---
+void SystemClock_Config(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+    // NOTE: This regulator config might need adjustment for STM32WLxx,
+    // but leaving as is to maintain original clock structure where possible.
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
+    RCC_OscInitStruct.MSIState = RCC_MSI_ON;
+    RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK3 | RCC_CLOCKTYPE_HCLK |
+                                  RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 |
+                                  RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.AHBCLK3Divider = RCC_SYSCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) Error_Handler();
+}
+
+// --- UART Initialization ---
+static void MX_USART2_UART_Init(void)
+{
+    huart2.Instance = USART2;
+    huart2.Init.BaudRate = 115200;
+    huart2.Init.WordLength = UART_WORDLENGTH_8B;
+    huart2.Init.StopBits = UART_STOPBITS_1;
+    huart2.Init.Parity = UART_PARITY_NONE;
+    huart2.Init.Mode = UART_MODE_TX_RX;
+    huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+
+    if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
+}
+
+// --- GPIO Initialization ---
+static void MX_GPIO_Init(void)
+{
+    // Enable GPIOB Clock (for sensor/LED) and GPIOA Clock (for UART2)
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE(); 
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    // 1. Configure UART2 Pins (PA2 = TX, PA3 = RX - Common setup for USART2)
+    GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART2; // Set Alternate Function to USART2
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct); // Initialize on GPIOA
+
+    // 2. Configure PB4 for IR Sensor Input with Interrupt
+    // Use RISING_FALLING mode to detect state change in both directions (obstacle in, obstacle out)
+    GPIO_InitStruct.Pin = GPIO_PIN_4;
+    GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    // 3. Configure PB5 for LED Output
+    GPIO_InitStruct.Pin = GPIO_PIN_5;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    // Set and Enable EXTI Interrupt
+    HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+}
+
+// --- Error Handler ---
+void Error_Handler(void)
+{
+    // In case of error, enter infinite loop and disable interrupts
+    __disable_irq();
+    while (1)
+    {
+        // Add error indication logic here (e.g., fast LED blink)
+    }
+}
+
+#ifdef USE_FULL_ASSERT
+void assert_failed(uint8_t *file, uint32_t line)
+{
+    printf("Wrong parameters value: file %s on line %lu\r\n", file, line);
+}
+#endif
 ```
+
 
 ## Output screen shots of serial port utility   :
  
- <img width="1919" height="987" alt="Screenshot 2025-09-15 110740" src="https://github.com/user-attachments/assets/19c280a1-d3eb-4646-8a22-986804a0eeab" />
+<img width="1909" height="669" alt="image" src="https://github.com/user-attachments/assets/f965ed40-d0ae-4419-b4c0-0725360feb2f" />
 
-## Circuit board :
- ### NO INTERRUPT
- ![IOT EX4 1](https://github.com/user-attachments/assets/c99b90f6-7cf1-4dad-932c-3980ea602a72)
 
-### INTERRUPT
- ![IOT EX 4 2](https://github.com/user-attachments/assets/773e2549-a226-4cd3-9728-1b67e60cbfe3)
 
+ ## Circuit board :
+
+<img width="441" height="659" alt="491905783-be6a769e-2554-4503-91bc-3b48f841fc6c" src="https://github.com/user-attachments/assets/14d453f2-8e12-4f1c-84a7-c60ee30b1612" />
+
+
+ 
 ## Result :
 Interfacing a  IR SENSOR and interrupt is generated using external interrupt mode , visualized on serial port 
